@@ -2,19 +2,34 @@ name: Package DeerFlow
 
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'  # 版本标签触发
   workflow_dispatch:  # 手动触发
     inputs:
+      package_type:
+        description: 'Package type'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - source
+        - docker
       create_release:
         description: 'Create GitHub Release'
         required: false
         default: false
         type: boolean
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_BACKEND: deer-flow-backend
+  IMAGE_NAME_FRONTEND: deer-flow-frontend
+
 jobs:
-  package-source:
-    name: Package Source Code
+  package:
+    name: Package DeerFlow
     runs-on: ubuntu-latest
     
     steps:
@@ -33,11 +48,12 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           
-      - name: Create source archives
+      - name: Package source code
+        if: github.event_name == 'workflow_dispatch' && (github.event.inputs.package_type == 'all' || github.event.inputs.package_type == 'source') || github.event_name == 'push'
         run: |
           mkdir -p dist
           
-          # 排除不必要的文件
+          # 创建源代码归档
           tar czf "dist/deer-flow-${{ steps.version.outputs.VERSION }}.tar.gz" \
             --exclude=.git \
             --exclude=.github \
@@ -73,18 +89,56 @@ jobs:
             "*.db" \
             "*.sqlite"
           
+          echo "Source packages created:"
           ls -lh dist/
           
+      - name: Build and push Docker images
+        if: github.event_name == 'workflow_dispatch' && (github.event.inputs.package_type == 'all' || github.event.inputs.package_type == 'docker') || github.event_name == 'push'
+        env:
+          DOCKER_BUILDKIT: 1
+        run: |
+          # 设置 Docker Buildx
+          docker buildx create --name mybuilder --use
+          docker buildx inspect --bootstrap
+          
+          # 登录到 GitHub Container Registry
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+          
+          # 构建后端镜像
+          echo "Building backend image..."
+          docker buildx build \
+            --file backend/Dockerfile \
+            --platform linux/amd64,linux/arm64 \
+            --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_BACKEND }}:latest \
+            --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_BACKEND }}:${{ steps.version.outputs.VERSION }} \
+            --push \
+            .
+          
+          # 构建前端镜像
+          echo "Building frontend image..."
+          docker buildx build \
+            --file frontend/Dockerfile \
+            --target prod \
+            --platform linux/amd64,linux/arm64 \
+            --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_FRONTEND }}:latest \
+            --tag ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_FRONTEND }}:${{ steps.version.outputs.VERSION }} \
+            --push \
+            .
+          
+          echo "Docker images pushed successfully"
+          
       - name: Upload artifacts
+        if: github.event_name == 'workflow_dispatch' && (github.event.inputs.package_type == 'all' || github.event.inputs.package_type == 'source') || github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
-          name: deer-flow-source-${{ steps.version.outputs.VERSION }}
+          name: deer-flow-packages-${{ steps.version.outputs.VERSION }}
           path: dist/
           retention-days: 7
           
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.create_release == 'true'
+        if: (startsWith(github.ref, 'refs/tags/') || github.event.inputs.create_release == 'true') && (github.event_name == 'workflow_dispatch' && (github.event.inputs.package_type == 'all' || github.event.inputs.package_type == 'source') || github.event_name == 'push')
         uses: softprops/action-gh-release@v1
         with:
           files: dist/*
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref, '-alpha') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
