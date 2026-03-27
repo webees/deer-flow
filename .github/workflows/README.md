@@ -26,7 +26,7 @@
 ## 3. lint-check.yml - 代码检查
 **功能**：运行代码格式检查和类型检查
 
-## 4. sync-upstream.yml - 上游代码同步
+## 4. sync.yml - 上游代码同步
 **功能**：每小时自动同步上游 bytedance/deer-flow 仓库的代码到当前仓库
 
 **触发条件**：
