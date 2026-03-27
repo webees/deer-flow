@@ -1,0 +1,117 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # 每小时运行一次，在每小时的第0分钟
+    - cron: '0 * * * *'
+  # 允许手动触发
+  workflow_dispatch:
+    inputs:
+      force_sync:
+        description: 'Force sync even if already up to date'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # 使用具有写权限的token
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0  # 获取所有历史记录，用于合并
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          # 移除可能存在的上游远程
+          git remote remove upstream 2>/dev/null || true
+          # 添加上游仓库
+          git remote add upstream https://github.com/bytedance/deer-flow.git
+
+      - name: Fetch upstream changes
+        run: git fetch upstream
+
+      - name: Check if sync is needed
+        id: check_sync
+        run: |
+          UPSTREAM_COMMIT=$(git rev-parse upstream/main)
+          CURRENT_COMMIT=$(git rev-parse HEAD)
+          
+          echo "Upstream commit: $UPSTREAM_COMMIT"
+          echo "Current commit: $CURRENT_COMMIT"
+          
+          if [ "$UPSTREAM_COMMIT" = "$CURRENT_COMMIT" ]; then
+            echo "Already up to date with upstream."
+            echo "sync_needed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Upstream has new commits. Sync needed."
+            echo "sync_needed=true" >> $GITHUB_OUTPUT
+            echo "upstream_commit=$UPSTREAM_COMMIT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge upstream changes
+        if: steps.check_sync.outputs.sync_needed == 'true' || github.event.inputs.force_sync == 'true'
+        run: |
+          # 尝试合并上游代码
+          echo "Merging upstream changes..."
+          git merge --no-ff --no-edit upstream/main || {
+            echo "Merge conflict detected. Attempting to resolve with ours strategy..."
+            git merge --abort
+            git merge -X ours --no-ff --no-edit upstream/main || {
+              echo "Failed to merge with ours strategy. Creating merge commit manually..."
+              # 如果合并失败，创建手动合并提交
+              git reset --hard HEAD
+              git fetch upstream
+              git merge --no-ff --no-commit upstream/main
+              git add -A
+              git commit -m "chore: sync upstream changes with conflict resolution"
+            }
+          }
+
+      - name: Create sync commit
+        if: steps.check_sync.outputs.sync_needed == 'true' || github.event.inputs.force_sync == 'true'
+        run: |
+          # 检查是否有需要提交的更改
+          if git diff --quiet HEAD upstream/main; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          
+          UPSTREAM_COMMIT=$(git rev-parse upstream/main)
+          SYNC_TIME=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          # 创建提交消息
+          git commit --allow-empty -m "chore: sync upstream changes from bytedance/deer-flow
+
+Automated sync from upstream repository:
+- Upstream commit: $UPSTREAM_COMMIT
+- Sync time: $SYNC_TIME
+- Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Push changes
+        if: steps.check_sync.outputs.sync_needed == 'true' || github.event.inputs.force_sync == 'true'
+        run: |
+          echo "Pushing changes to origin..."
+          git push origin main
+          
+          echo "✅ Successfully synced upstream changes!"
+          echo "Upstream commit: ${{ steps.check_sync.outputs.upstream_commit }}"
+
+      - name: Skip sync (already up to date)
+        if: steps.check_sync.outputs.sync_needed == 'false' && github.event.inputs.force_sync == 'false'
+        run: |
+          echo "⏭️  Skipping sync - already up to date with upstream."
+          echo "To force sync, use the 'Run workflow' button and enable 'force_sync'."
