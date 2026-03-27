@@ -93,13 +93,15 @@ jobs:
           UPSTREAM_COMMIT=$(git rev-parse upstream/main)
           SYNC_TIME=$(date -u +'%Y-%m-%d %H:%M:%S UTC')
           
-          # 创建提交消息
-          git commit --allow-empty -m "chore: sync upstream changes from bytedance/deer-flow
-
-Automated sync from upstream repository:
-- Upstream commit: $UPSTREAM_COMMIT
-- Sync time: $SYNC_TIME
-- Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # 创建提交消息 - 使用单行格式避免YAML解析问题
+          COMMIT_MSG="chore: sync upstream changes from bytedance/deer-flow"
+          COMMIT_MSG="$COMMIT_MSG\n\nAutomated sync from upstream repository:"
+          COMMIT_MSG="$COMMIT_MSG\n- Upstream commit: $UPSTREAM_COMMIT"
+          COMMIT_MSG="$COMMIT_MSG\n- Sync time: $SYNC_TIME"
+          COMMIT_MSG="$COMMIT_MSG\n- Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          # 使用printf处理换行符
+          git commit --allow-empty -m "$(printf "$COMMIT_MSG")"
 
       - name: Push changes
         if: steps.check_sync.outputs.sync_needed == 'true' || github.event.inputs.force_sync == 'true'
